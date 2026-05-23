@@ -1,0 +1,127 @@
+// =============================================================================
+// APB Scoreboard
+// Reference model: tracks register state, checks read-data and SLVERR
+// =============================================================================
+
+class apb_scoreboard extends uvm_scoreboard;
+    `uvm_component_utils(apb_scoreboard)
+
+    // Analysis FIFO – receives transactions from monitor
+    uvm_tlm_analysis_fifo #(apb_seq_item) fifo;
+
+    // -----------------------------------------------------------------------
+    // Reference register model (mirrors DUT register file)
+    // -----------------------------------------------------------------------
+    localparam int NUM_REGS  = 8;
+    localparam int NUM_BYTES = 4;
+
+    logic [31:0] ref_regs [0:NUM_REGS-1];
+
+    // -----------------------------------------------------------------------
+    // Statistics
+    // -----------------------------------------------------------------------
+    int unsigned pass_cnt  = 0;
+    int unsigned fail_cnt  = 0;
+    int unsigned total_cnt = 0;
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        fifo = new("fifo", this);
+        foreach (ref_regs[i]) ref_regs[i] = '0;
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // run_phase – consume and check every transaction
+    // -----------------------------------------------------------------------
+    task run_phase(uvm_phase phase);
+        apb_seq_item trans;
+        forever begin
+            fifo.get(trans);
+            check_transaction(trans);
+        end
+    endtask
+
+    // -----------------------------------------------------------------------
+    // check_transaction
+    // -----------------------------------------------------------------------
+    function void check_transaction(apb_seq_item trans);
+        bit   addr_valid;
+        int   reg_idx;
+        logic [31:0] expected_data;
+        logic        expected_slverr;
+
+        total_cnt++;
+
+        // Address decode (mirrors RTL)
+        reg_idx   = trans.addr[4:2];
+        addr_valid = (trans.addr[31:5] == '0) &&
+                     (trans.addr[1:0]  == 2'b00) &&
+                     (reg_idx          < NUM_REGS);
+
+        expected_slverr = !addr_valid;
+
+        // ---- WRITE -----------------------------------------------------------
+        if (trans.kind == apb_seq_item::WRITE) begin
+            if (addr_valid) begin
+                // Apply byte strobes to reference model
+                for (int b = 0; b < NUM_BYTES; b++) begin
+                    if (trans.strb[b])
+                        ref_regs[reg_idx][b*8 +: 8] = trans.data[b*8 +: 8];
+                end
+            end
+
+            // Check PSLVERR
+            if (trans.slverr !== expected_slverr) begin
+                `uvm_error("SB_SLVERR",
+                    $sformatf("WRITE addr=0x%08h: expected SLVERR=%0b got %0b",
+                              trans.addr, expected_slverr, trans.slverr))
+                fail_cnt++;
+            end else begin
+                `uvm_info("SB_PASS",
+                    $sformatf("WRITE addr=0x%08h data=0x%08h strb=%04b PASS",
+                              trans.addr, trans.data, trans.strb), UVM_MEDIUM)
+                pass_cnt++;
+            end
+        end
+
+        // ---- READ ------------------------------------------------------------
+        else begin
+            expected_data = addr_valid ? ref_regs[reg_idx] : '0;
+
+            if (addr_valid && (trans.data !== expected_data)) begin
+                `uvm_error("SB_RDATA",
+                    $sformatf("READ addr=0x%08h: expected=0x%08h got=0x%08h",
+                              trans.addr, expected_data, trans.data))
+                fail_cnt++;
+            end else if (trans.slverr !== expected_slverr) begin
+                `uvm_error("SB_SLVERR",
+                    $sformatf("READ addr=0x%08h: expected SLVERR=%0b got %0b",
+                              trans.addr, expected_slverr, trans.slverr))
+                fail_cnt++;
+            end else begin
+                `uvm_info("SB_PASS",
+                    $sformatf("READ  addr=0x%08h data=0x%08h PASS",
+                              trans.addr, trans.data), UVM_MEDIUM)
+                pass_cnt++;
+            end
+        end
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // report_phase
+    // -----------------------------------------------------------------------
+    function void report_phase(uvm_phase phase);
+        `uvm_info("SCOREBOARD",
+            $sformatf("\n======================================\n  SCOREBOARD SUMMARY\n  Total : %0d\n  Pass  : %0d\n  Fail  : %0d\n======================================",
+                      total_cnt, pass_cnt, fail_cnt), UVM_NONE)
+        if (fail_cnt > 0)
+            `uvm_error("SCOREBOARD", "TEST FAILED – see errors above")
+        else
+            `uvm_info ("SCOREBOARD", "TEST PASSED", UVM_NONE)
+    endfunction
+
+endclass : apb_scoreboard

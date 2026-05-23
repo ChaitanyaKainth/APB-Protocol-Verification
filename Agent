@@ -1,0 +1,49 @@
+// =============================================================================
+// APB Agent
+// Encapsulates sequencer, driver, and monitor
+// =============================================================================
+
+class apb_agent extends uvm_agent;
+    `uvm_component_utils(apb_agent)
+
+    // Sub-components
+    uvm_sequencer #(apb_seq_item) sequencer;
+    apb_driver                    driver;
+    apb_monitor                   monitor;
+
+    // Expose monitor analysis port at agent level
+    uvm_analysis_port #(apb_seq_item) ap;
+
+    // Agent configuration
+    uvm_active_passive_enum is_active = UVM_ACTIVE;
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // build_phase
+    // -----------------------------------------------------------------------
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+
+        // Always instantiate the monitor (needed in both active and passive)
+        monitor = apb_monitor::type_id::create("monitor", this);
+
+        if (is_active == UVM_ACTIVE) begin
+            sequencer = uvm_sequencer #(apb_seq_item)::type_id::create("sequencer", this);
+            driver    = apb_driver::type_id::create("driver", this);
+        end
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // connect_phase
+    // -----------------------------------------------------------------------
+    function void connect_phase(uvm_phase phase);
+        ap = monitor.ap;   // proxy analysis port
+
+        if (is_active == UVM_ACTIVE)
+            driver.seq_item_port.connect(sequencer.seq_item_export);
+    endfunction
+
+endclass : apb_agent

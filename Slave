@@ -1,0 +1,109 @@
+// =============================================================================
+// APB Slave RTL Design
+// Supports: 8 x 32-bit registers, address decoding, wait states,
+//           setup/enable phase protocol timing
+// =============================================================================
+
+module apb_slave #(
+    parameter DATA_WIDTH = 32,
+    parameter ADDR_WIDTH = 32,
+    parameter NUM_REGS   = 8,
+    parameter WAIT_STATES = 1   // Configurable wait states
+)(
+    // APB Interface
+    input  logic                  PCLK,
+    input  logic                  PRESETn,
+    input  logic [ADDR_WIDTH-1:0] PADDR,
+    input  logic                  PSEL,
+    input  logic                  PENABLE,
+    input  logic                  PWRITE,
+    input  logic [DATA_WIDTH-1:0] PWDATA,
+    input  logic [3:0]            PSTRB,   // Byte strobes (APB4)
+    output logic [DATA_WIDTH-1:0] PRDATA,
+    output logic                  PREADY,
+    output logic                  PSLVERR
+);
+
+    // -------------------------------------------------------------------------
+    // Internal register file: 8 registers at offsets 0x00–0x1C (word-aligned)
+    // -------------------------------------------------------------------------
+    logic [DATA_WIDTH-1:0] reg_file [0:NUM_REGS-1];
+
+    // Wait-state counter
+    logic [$clog2(WAIT_STATES+1)-1:0] wait_cnt;
+
+    // Decoded register index
+    logic [$clog2(NUM_REGS)-1:0] reg_idx;
+    logic                        addr_valid;
+
+    // -------------------------------------------------------------------------
+    // Address decode
+    // Slave occupies 0x0000_0000 – 0x0000_001C (8 word-aligned registers)
+    // -------------------------------------------------------------------------
+    always_comb begin
+        reg_idx    = PADDR[4:2];   // bits [4:2] select register 0–7
+        addr_valid = (PADDR[ADDR_WIDTH-1:5] == '0) &&   // upper bits zero
+                     (PADDR[1:0]            == 2'b00) && // word-aligned
+                     (PADDR[4:2]            < NUM_REGS[2:0]);
+    end
+
+    // -------------------------------------------------------------------------
+    // PREADY / wait-state generation
+    // PREADY is de-asserted for WAIT_STATES cycles after PENABLE rises
+    // -------------------------------------------------------------------------
+    always_ff @(posedge PCLK or negedge PRESETn) begin
+        if (!PRESETn) begin
+            wait_cnt <= '0;
+            PREADY   <= 1'b0;
+        end else begin
+            if (PSEL && PENABLE) begin
+                if (wait_cnt == WAIT_STATES[$clog2(WAIT_STATES+1)-1:0]) begin
+                    PREADY   <= 1'b1;
+                    wait_cnt <= '0;
+                end else begin
+                    PREADY   <= 1'b0;
+                    wait_cnt <= wait_cnt + 1'b1;
+                end
+            end else begin
+                PREADY   <= 1'b0;
+                wait_cnt <= '0;
+            end
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // Write logic  (byte-strobe aware)
+    // -------------------------------------------------------------------------
+    always_ff @(posedge PCLK or negedge PRESETn) begin
+        if (!PRESETn) begin
+            for (int i = 0; i < NUM_REGS; i++)
+                reg_file[i] <= '0;
+        end else begin
+            if (PSEL && PENABLE && PWRITE && PREADY && addr_valid) begin
+                if (PSTRB[0]) reg_file[reg_idx][ 7: 0] <= PWDATA[ 7: 0];
+                if (PSTRB[1]) reg_file[reg_idx][15: 8] <= PWDATA[15: 8];
+                if (PSTRB[2]) reg_file[reg_idx][23:16] <= PWDATA[23:16];
+                if (PSTRB[3]) reg_file[reg_idx][31:24] <= PWDATA[31:24];
+            end
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // Read logic (combinational)
+    // -------------------------------------------------------------------------
+    always_comb begin
+        PRDATA  = '0;
+        PSLVERR = 1'b0;
+
+        if (PSEL && !PWRITE) begin
+            if (addr_valid)
+                PRDATA = reg_file[reg_idx];
+            else
+                PSLVERR = 1'b1;   // invalid address → slave error
+        end
+
+        if (PSEL && PWRITE && !addr_valid)
+            PSLVERR = 1'b1;
+    end
+
+endmodule

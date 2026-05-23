@@ -1,0 +1,155 @@
+# APB Slave – RTL Design & UVM Verification Environment
+
+## Overview
+
+This project implements a **fully protocol-compliant APB (AMBA Peripheral Bus) Slave** in
+SystemVerilog and verifies it with a complete **UVM-based testbench** covering:
+
+- Correct APB setup/enable two-phase handshake
+- Address decoding (8 × 32-bit word-aligned registers)
+- Byte-strobe (PSTRB) write granularity
+- Configurable wait-state insertion via PREADY
+- PSLVERR signalling for invalid accesses
+
+---
+
+## File Map
+
+```
+┌─ RTL Design ──────────────────────────────────────────────────────┐
+│  apb_slave.sv          APB Slave (register file, wait states,     │
+│                        PREADY, PSLVERR, byte strobes)             │
+└───────────────────────────────────────────────────────────────────┘
+
+┌─ Testbench ───────────────────────────────────────────────────────┐
+│  apb_if.sv             SystemVerilog interface + clocking blocks  │
+│  apb_seq_item.sv       UVM transaction (sequence item)            │
+│  apb_sequences.sv      Write / Read / WR-RD / Random / SlvErr     │
+│  apb_driver.sv         APB master driver (setup + enable phases)  │
+│  apb_monitor.sv        Passive bus observer → analysis port       │
+│  apb_agent.sv          Agent (sequencer + driver + monitor)       │
+│  apb_scoreboard.sv     Reference model + checker                  │
+│  apb_coverage.sv       Functional covergroups                     │
+│  apb_env.sv            Environment (agent + SB + cov)             │
+│  apb_tests.sv          5 directed + random UVM tests              │
+│  apb_uvm_pkg.sv        Package wrapper (compile order)            │
+│  tb_top.sv             Top module: DUT + clk/rst + UVM kickoff    │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## APB Protocol Summary
+
+```
+Clock  : ___/‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___
+         |       |       |       |       |
+PSEL   : ________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾\_____
+PENABLE: ______________/‾‾‾‾‾‾‾‾‾‾‾‾‾\_______
+PREADY : ________________/‾‾‾‾‾‾‾\___________ ← DUT de-asserts during wait states
+         IDLE   SETUP    ENABLE(ws) ENABLE  IDLE
+```
+
+---
+
+## DUT Register Map
+
+| Offset | Register | Reset Value |
+|--------|----------|-------------|
+| 0x00   | REG0     | 0x0000_0000 |
+| 0x04   | REG1     | 0x0000_0000 |
+| 0x08   | REG2     | 0x0000_0000 |
+| 0x0C   | REG3     | 0x0000_0000 |
+| 0x10   | REG4     | 0x0000_0000 |
+| 0x14   | REG5     | 0x0000_0000 |
+| 0x18   | REG6     | 0x0000_0000 |
+| 0x1C   | REG7     | 0x0000_0000 |
+
+Addresses ≥ 0x20 or non-word-aligned → **PSLVERR = 1**
+
+---
+
+## UVM Architecture
+
+```
+┌──────────────────────────────────────────────┐
+│                  apb_env                     │
+│  ┌─────────────────────────────────────────┐ │
+│  │              apb_agent                  │ │
+│  │  ┌────────────┐   ┌──────────────────┐  │ │
+│  │  │ sequencer  │──▶│    apb_driver    │  │ │
+│  │  └────────────┘   └──────────────────┘  │ │
+│  │                   ┌──────────────────┐  │ │
+│  │                   │   apb_monitor    │──┼─┼──▶ analysis_port
+│  │                   └──────────────────┘  │ │          │
+│  └─────────────────────────────────────────┘ │          │
+│                                               │    ┌─────┴──────┐
+│   ┌───────────────────┐  ┌────────────────┐   │    │ scoreboard │
+│   │  apb_scoreboard   │◀─│  apb_coverage  │◀──┘    └────────────┘
+│   └───────────────────┘  └────────────────┘         (reference
+└──────────────────────────────────────────────┘         model)
+```
+
+---
+
+## Tests
+
+| Test Name             | Description                                    |
+|-----------------------|------------------------------------------------|
+| `apb_reg_rw_test`     | Directed write→read-back for all 8 registers  |
+| `apb_strobe_test`     | Partial byte-strobe write verification         |
+| `apb_slverr_test`     | Invalid address access → PSLVERR expected      |
+| `apb_random_test`     | 50 randomised read/write transactions          |
+| `apb_wr_rd_test`      | 10 random write-then-read-back pairs           |
+
+---
+
+## How to Run (Questa)
+
+```bash
+# Compile and run one test
+make run TEST=apb_reg_rw_test
+
+# Run all 5 tests
+make all_tests
+
+# Compile only
+make compile
+
+# Open waveform GUI
+make wave TEST=apb_random_test
+
+# Xcelium
+make run TOOL=xcelium TEST=apb_random_test
+
+# VCS
+make run TOOL=vcs TEST=apb_strobe_test
+
+# Clean
+make clean
+```
+
+---
+
+## Scoreboard Logic
+
+The scoreboard maintains a **software mirror** of all 8 registers.
+On every transaction observed by the monitor it:
+
+1. **WRITE** – applies byte-strobe mask to the mirror, checks `PSLVERR`
+2. **READ**  – compares `PRDATA` against mirror, checks `PSLVERR`
+3. **Invalid address** – expects `PSLVERR = 1` on either kind
+
+A final `report_phase` summary prints total / pass / fail counts.
+
+---
+
+## Coverage
+
+The `apb_coverage` subscriber samples:
+
+- Transfer direction (`READ` / `WRITE`)
+- All 8 register addresses + invalid bins
+- All useful byte-strobe patterns
+- PSLVERR assertion
+- Cross coverage: direction × address, direction × error

@@ -1,0 +1,154 @@
+// =============================================================================
+// APB Sequences
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Base sequence
+// ---------------------------------------------------------------------------
+class apb_base_seq extends uvm_sequence #(apb_seq_item);
+    `uvm_object_utils(apb_base_seq)
+
+    function new(string name = "apb_base_seq");
+        super.new(name);
+    endfunction
+endclass : apb_base_seq
+
+// ---------------------------------------------------------------------------
+// Single write sequence
+// ---------------------------------------------------------------------------
+class apb_write_seq extends apb_base_seq;
+    `uvm_object_utils(apb_write_seq)
+
+    rand logic [31:0] addr;
+    rand logic [31:0] data;
+    rand logic [3:0]  strb;
+
+    constraint c_addr { addr inside {32'h00, 32'h04, 32'h08, 32'h0C,
+                                     32'h10, 32'h14, 32'h18, 32'h1C}; }
+    constraint c_strb { strb != 4'h0; }
+
+    function new(string name = "apb_write_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        apb_seq_item item;
+        item = apb_seq_item::type_id::create("item");
+        start_item(item);
+        if (!item.randomize() with {
+            kind == apb_seq_item::WRITE;
+            addr == local::addr;
+            data == local::data;
+            strb == local::strb;
+        }) `uvm_fatal("RAND", "Randomization failed")
+        finish_item(item);
+    endtask
+endclass : apb_write_seq
+
+// ---------------------------------------------------------------------------
+// Single read sequence
+// ---------------------------------------------------------------------------
+class apb_read_seq extends apb_base_seq;
+    `uvm_object_utils(apb_read_seq)
+
+    rand logic [31:0] addr;
+    logic      [31:0] rdata;  // captured after finish_item
+
+    constraint c_addr { addr inside {32'h00, 32'h04, 32'h08, 32'h0C,
+                                     32'h10, 32'h14, 32'h18, 32'h1C}; }
+
+    function new(string name = "apb_read_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        apb_seq_item item;
+        item = apb_seq_item::type_id::create("item");
+        start_item(item);
+        if (!item.randomize() with {
+            kind == apb_seq_item::READ;
+            addr == local::addr;
+        }) `uvm_fatal("RAND", "Randomization failed")
+        finish_item(item);
+        rdata = item.data;
+    endtask
+endclass : apb_read_seq
+
+// ---------------------------------------------------------------------------
+// Write-then-read-back sequence (verifies data integrity)
+// ---------------------------------------------------------------------------
+class apb_wr_rd_seq extends apb_base_seq;
+    `uvm_object_utils(apb_wr_rd_seq)
+
+    function new(string name = "apb_wr_rd_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        apb_seq_item wr_item, rd_item;
+
+        // -- write phase --
+        wr_item = apb_seq_item::type_id::create("wr_item");
+        start_item(wr_item);
+        if (!wr_item.randomize() with { kind == apb_seq_item::WRITE; strb == 4'hF; })
+            `uvm_fatal("RAND", "Write randomization failed")
+        finish_item(wr_item);
+
+        // -- read-back phase --
+        rd_item = apb_seq_item::type_id::create("rd_item");
+        start_item(rd_item);
+        if (!rd_item.randomize() with {
+            kind == apb_seq_item::READ;
+            addr == wr_item.addr;
+        }) `uvm_fatal("RAND", "Read randomization failed")
+        finish_item(rd_item);
+    endtask
+endclass : apb_wr_rd_seq
+
+// ---------------------------------------------------------------------------
+// Random mix sequence
+// ---------------------------------------------------------------------------
+class apb_random_seq extends apb_base_seq;
+    `uvm_object_utils(apb_random_seq)
+
+    int unsigned num_transactions = 20;
+
+    function new(string name = "apb_random_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        apb_seq_item item;
+        repeat (num_transactions) begin
+            item = apb_seq_item::type_id::create("item");
+            start_item(item);
+            if (!item.randomize()) `uvm_fatal("RAND", "Randomization failed")
+            finish_item(item);
+        end
+    endtask
+endclass : apb_random_seq
+
+// ---------------------------------------------------------------------------
+// Invalid address sequence (expects PSLVERR)
+// ---------------------------------------------------------------------------
+class apb_invalid_addr_seq extends apb_base_seq;
+    `uvm_object_utils(apb_invalid_addr_seq)
+
+    function new(string name = "apb_invalid_addr_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        apb_seq_item item;
+        // Access address beyond register file
+        foreach ({32'h20, 32'h100, 32'hFFFF_FFFC}[i]) begin
+            item = apb_seq_item::type_id::create("item");
+            start_item(item);
+            if (!item.randomize() with {
+                addr == {32'h20, 32'h100, 32'hFFFF_FFFC}[i];
+                strb == 4'hF;
+            }) `uvm_fatal("RAND", "Randomization failed")
+            finish_item(item);
+        end
+    endtask
+endclass : apb_invalid_addr_seq

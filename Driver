@@ -1,0 +1,91 @@
+// =============================================================================
+// APB Driver
+// Drives APB setup and enable phases with correct protocol timing
+// =============================================================================
+
+class apb_driver extends uvm_driver #(apb_seq_item);
+    `uvm_component_utils(apb_driver)
+
+    // Virtual interface handle
+    virtual apb_if #(.DATA_WIDTH(32), .ADDR_WIDTH(32)) vif;
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // build_phase: fetch virtual interface from config DB
+    // -----------------------------------------------------------------------
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        if (!uvm_config_db #(virtual apb_if)::get(this, "", "vif", vif))
+            `uvm_fatal("NO_VIF", "Could not get APB virtual interface from config DB")
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // run_phase
+    // -----------------------------------------------------------------------
+    task run_phase(uvm_phase phase);
+        apb_seq_item req;
+        // De-assert bus during reset
+        drive_idle();
+        @(posedge vif.PRESETn);
+        @(posedge vif.PCLK);
+
+        forever begin
+            seq_item_port.get_next_item(req);
+            drive_transaction(req);
+            seq_item_port.item_done();
+        end
+    endtask
+
+    // -----------------------------------------------------------------------
+    // drive_transaction: implements 2-phase APB transfer
+    //   Phase 1 – SETUP   : assert PSEL, set PADDR/PWRITE/PWDATA, deassert PENABLE
+    //   Phase 2 – ENABLE  : assert PENABLE, wait for PREADY
+    // -----------------------------------------------------------------------
+    task drive_transaction(apb_seq_item item);
+        // ---- SETUP phase (1 clock cycle) ------------------------------------
+        @(vif.master_cb);
+        vif.master_cb.PADDR   <= item.addr;
+        vif.master_cb.PWRITE  <= (item.kind == apb_seq_item::WRITE);
+        vif.master_cb.PSTRB   <= (item.kind == apb_seq_item::WRITE) ? item.strb : 4'h0;
+        vif.master_cb.PWDATA  <= (item.kind == apb_seq_item::WRITE) ? item.data : '0;
+        vif.master_cb.PSEL    <= 1'b1;
+        vif.master_cb.PENABLE <= 1'b0;
+
+        // ---- ENABLE phase ---------------------------------------------------
+        @(vif.master_cb);
+        vif.master_cb.PENABLE <= 1'b1;
+
+        // Wait for PREADY (DUT may insert wait states)
+        do begin
+            @(vif.master_cb);
+        end while (!vif.master_cb.PREADY);
+
+        // Capture read data and slave error
+        if (item.kind == apb_seq_item::READ) begin
+            item.data   = vif.master_cb.PRDATA;
+        end
+        item.slverr = vif.master_cb.PSLVERR;
+
+        `uvm_info("APB_DRV", item.convert2string(), UVM_HIGH)
+
+        // ---- Return to idle -------------------------------------------------
+        drive_idle();
+    endtask
+
+    // -----------------------------------------------------------------------
+    // drive_idle: deassert all control signals
+    // -----------------------------------------------------------------------
+    task drive_idle();
+        @(vif.master_cb);
+        vif.master_cb.PSEL    <= 1'b0;
+        vif.master_cb.PENABLE <= 1'b0;
+        vif.master_cb.PWRITE  <= 1'b0;
+        vif.master_cb.PADDR   <= '0;
+        vif.master_cb.PWDATA  <= '0;
+        vif.master_cb.PSTRB   <= 4'h0;
+    endtask
+
+endclass : apb_driver

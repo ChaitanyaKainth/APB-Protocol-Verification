@@ -1,0 +1,51 @@
+// =============================================================================
+// APB Sequence Item (Transaction)
+// =============================================================================
+
+class apb_seq_item extends uvm_sequence_item;
+
+    `uvm_object_utils_begin(apb_seq_item)
+        `uvm_field_enum  (apb_trans_kind_e, kind,    UVM_ALL_ON)
+        `uvm_field_int   (addr,                       UVM_ALL_ON)
+        `uvm_field_int   (data,                       UVM_ALL_ON)
+        `uvm_field_int   (strb,                       UVM_ALL_ON)
+        `uvm_field_int   (slverr,                     UVM_ALL_ON)
+    `uvm_object_utils_end
+
+    // ---- transaction kind -----------------------------------------------
+    typedef enum logic { READ = 0, WRITE = 1 } apb_trans_kind_e;
+
+    // ---- fields ---------------------------------------------------------
+    rand apb_trans_kind_e  kind;
+    rand logic [31:0]      addr;
+    rand logic [31:0]      data;    // driven for WRITE, sampled for READ
+    rand logic [3:0]       strb;    // byte enables (write only)
+    logic                  slverr;  // sampled from DUT
+
+    // ---- constraints ----------------------------------------------------
+    // Default: valid register addresses (0x00–0x1C, word-aligned)
+    constraint c_valid_addr {
+        addr inside {32'h00, 32'h04, 32'h08, 32'h0C,
+                     32'h10, 32'h14, 32'h18, 32'h1C};
+    }
+
+    constraint c_strb_write {
+        (kind == WRITE) -> (strb != 4'h0);   // at least one byte enabled
+    }
+
+    constraint c_strb_read {
+        (kind == READ) -> (strb == 4'hF);    // strobes unused on read
+    }
+
+    // ---- constructor ----------------------------------------------------
+    function new(string name = "apb_seq_item");
+        super.new(name);
+    endfunction
+
+    // ---- helper ---------------------------------------------------------
+    function string convert2string();
+        return $sformatf("[APB %s] addr=0x%08h data=0x%08h strb=%04b slverr=%0b",
+                         kind.name(), addr, data, strb, slverr);
+    endfunction
+
+endclass : apb_seq_item

@@ -1,0 +1,65 @@
+// =============================================================================
+// APB Monitor
+// Observes bus, reconstructs complete transactions, broadcasts via analysis port
+// =============================================================================
+
+class apb_monitor extends uvm_monitor;
+    `uvm_component_utils(apb_monitor)
+
+    virtual apb_if #(.DATA_WIDTH(32), .ADDR_WIDTH(32)) vif;
+
+    // Analysis port – broadcasts captured transactions to scoreboard/coverage
+    uvm_analysis_port #(apb_seq_item) ap;
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        ap = new("ap", this);
+        if (!uvm_config_db #(virtual apb_if)::get(this, "", "vif", vif))
+            `uvm_fatal("NO_VIF", "Could not get APB virtual interface from config DB")
+    endfunction
+
+    // -----------------------------------------------------------------------
+    // run_phase – continuously observe the bus
+    // -----------------------------------------------------------------------
+    task run_phase(uvm_phase phase);
+        apb_seq_item trans;
+
+        // Wait for reset de-assertion
+        @(posedge vif.PRESETn);
+
+        forever begin
+            // Wait for SETUP phase: PSEL=1, PENABLE=0
+            @(vif.monitor_cb);
+            if (vif.monitor_cb.PSEL && !vif.monitor_cb.PENABLE) begin
+
+                trans = apb_seq_item::type_id::create("mon_trans");
+                trans.addr  = vif.monitor_cb.PADDR;
+                trans.kind  = apb_seq_item::apb_trans_kind_e'(vif.monitor_cb.PWRITE);
+                trans.strb  = vif.monitor_cb.PSTRB;
+
+                if (trans.kind == apb_seq_item::WRITE)
+                    trans.data = vif.monitor_cb.PWDATA;
+
+                // Advance to ENABLE phase
+                @(vif.monitor_cb);
+
+                // Wait for PREADY (handle wait states)
+                while (!vif.monitor_cb.PREADY)
+                    @(vif.monitor_cb);
+
+                // Sample completion
+                trans.slverr = vif.monitor_cb.PSLVERR;
+                if (trans.kind == apb_seq_item::READ)
+                    trans.data = vif.monitor_cb.PRDATA;
+
+                `uvm_info("APB_MON", trans.convert2string(), UVM_MEDIUM)
+                ap.write(trans);
+            end
+        end
+    endtask
+
+endclass : apb_monitor
